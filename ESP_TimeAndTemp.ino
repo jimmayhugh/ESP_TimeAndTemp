@@ -6,12 +6,17 @@
  * written by Renzo Mischianti <www.mischianti.org>
  */
  
-const char *ssid     = "SSID";
-const char *password = "PASSWORD";
+#include "/home/jimm/Arduino/arduino_secrets.h" 
+
+///////please enter your sensitive data in the Secret tab/arduino_secrets.h
+char ssid[]     = SECRET_SSID;        // your network SSID (name)
+char password[] = SECRET_PASS;    // your network password (use for WPA, or use as key for WEP)
+int keyIndex = 0;            // your network key Index number (needed only for WEP)
  
-#include <NTPClient.h>
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
+#include <ESP8266mDNS.h>
+#include <NTPClient.h>
 #include <TimeLib.h>
 #include <time.h>
 #include <Timezone.h>    // https://github.com/JChristensen/Timezone
@@ -19,6 +24,8 @@ const char *password = "PASSWORD";
 #include <Adafruit_GFX.h>
 #include "Adafruit_LEDBackpack.h"
 #include <OneWire.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 Adafruit_7segment ledClock = Adafruit_7segment();
 Adafruit_7segment ledTemp = Adafruit_7segment();
@@ -69,6 +76,14 @@ TimeChangeRule usPDT = {"PDT", Second, Sun, Mar, 2, -420};
 TimeChangeRule usPST = {"PST", First, Sun, Nov, 2, -480};
 Timezone usPT(usPDT, usPST);
 
+// UDP temp info
+
+#define TEMP_PORT 5226
+WiFiUDP tempUDP;
+char packet[255];
+char reply[10];
+int packetSize;
+
 // OneWire Stuff
   byte i;
   byte present = 0;
@@ -76,6 +91,44 @@ Timezone usPT(usPDT, usPST);
   byte data[9];
   byte addr[8];
   float celsius, fahrenheit;
+
+char *ftoa(char *a, double f, int precision)
+{
+  long p[] = {0,10,100,1000,10000,100000,1000000,10000000,100000000};
+  
+  char *ret = a;
+  long heiltal = (long)f;
+  itoa(heiltal, a, 10);
+  while (*a != '\0') a++;
+  *a++ = '.';
+  long desimal = abs((long)((f - heiltal) * p[precision]));
+  itoa(desimal, a, 10);
+  return ret;
+}
+
+void sendTemp(void)
+{
+  // If packet received...
+  packetSize = tempUDP.parsePacket();
+  if (packetSize) 
+  {
+    Serial.print("Received packet! Size: ");
+    Serial.println(packetSize); 
+    int len = tempUDP.read(packet, 255);
+    if (len > 0)
+    {
+      packet[len] = '\0';
+    }
+    Serial.print("Packet received: ");
+    Serial.println(packet);
+
+    // Send return packet
+    ftoa(reply,fahrenheit,1);
+    tempUDP.beginPacket(tempUDP.remoteIP(), tempUDP.remotePort());
+    tempUDP.write(reply);
+    tempUDP.endPacket();
+  }
+}
 
 void findDS(void)
 {
@@ -180,16 +233,41 @@ void setup()
   ledTemp.begin(0x71);
   
   findDS();
- 
+  
+  delay(1000);
+  
+  Serial.println();
+  Serial.println();
+  
   while ( WiFi.status() != WL_CONNECTED )
   {
     delay ( 500 );
     Serial.print ( "." );
   }
+  // Connected to WiFi
   Serial.println();
+  Serial.print("Connected! IP address: ");
+  Serial.println(WiFi.localIP());
+  Serial.println();
+
+  // Set up mDNS responder:
+  // - first argument is the domain name, in this example
+  //   the fully-qualified domain name is "esp8266.local"
+  // - second argument is the IP address to advertise
+  //   we send our IP address on the WiFi network
+  if (!MDNS.begin("outsidetemp")) {
+    Serial.println("Error setting up MDNS responder!");
+    while (1) { delay(1000); }
+  }
+  Serial.println("mDNS responder started");
+
   timeClient.begin();
   delay ( 1000 );
   ntpUpdate();
+
+  tempUDP.begin(TEMP_PORT);
+  Serial.print("Listening on UDP port: ");
+  Serial.println(TEMP_PORT);
 }
 
 int loopCnt = 0;
@@ -220,6 +298,12 @@ void loop()
   ledTemp.print(fahrenheit,1);
   ledTemp.writeDisplay();
 
+  delay(1000);
+
+  sendTemp();
+  delay(1000);
+
+  MDNS.update();
   delay(1000);
   
   loopCnt++;
